@@ -1,0 +1,132 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+    --font-heading: var(--font-sans);
+    --font-sans: var(--font-sans);
+    --color-sidebar-ring: var(--sidebar-ring);
+    --color-sidebar-border: var(--sidebar-border);
+    --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+    --color-sidebar-accent: var(--sidebar-accent);
+    --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+    --color-sidebar-primary: var(--sidebar-primary);
+    --color-sidebar-foreground: var(--sidebar-foreground);
+    --color-sidebar: var(--sidebar);
+    --color-chart-5: var(--chart-5);
+    --color-chart-4: var(--chart-4);
+    --color-chart-3: var(--chart-3);
+    --color-chart-2: var(--chart-2);
+    --color-chart-1: var(--chart-1);
+    --color-ring: var(--ring);
+    --color-input: var(--input);
+    --color-border: var(--border);
+    --color-destructive: var(--destructive);
+    --color-accent-foreground: var(--accent-foreground);
+    --color-accent: var(--accent);
+    --color-muted-foreground: var(--muted-foreground);
+    --color-muted: var(--muted);
+    --color-secondary-foreground: var(--secondary-foreground);
+    --color-secondary: var(--secondary);
+    --color-primary-foreground: var(--primary-foreground);
+    --color-primary: var(--primary);
+    --color-popover-foreground: var(--popover-foreground);
+    --color-popover: var(--popover);
+    --color-card-foreground: var(--card-foreground);
+    --color-card: var(--card);
+    --color-foreground: var(--foreground);
+    --color-background: var(--background);
+    --radius-sm: calc(var(--radius) * 0.6);
+    --radius-md: calc(var(--radius) * 0.8);
+    --radius-lg: var(--radius);
+    --radius-xl: calc(var(--radius) * 1.4);
+    --radius-2xl: calc(var(--radius) * 1.8);
+    --radius-3xl: calc(var(--radius) * 2.2);
+    --radius-4xl: calc(var(--radius) * 2.6);
+}
+
+@theme {
+    --color-brand-dark: #102a2a;
+    --color-brand: #0f766e;
+    --color-brand-hover: #115e59;
+    --color-mint: #5eead4;
+    --color-mint-hover: #2dd4bf;
+    --color-mint-soft: #d7f5ef;
+    --color-app: #f5f8f7;
+    --color-surface: #ffffff;
+    --color-ink: #172b2a;
+    --color-ink-muted: #64748b;
+    --color-line: #dce7e4;
+    --color-success: #15803d;
+    --color-success-soft: #e8f6ec;
+    --color-warning: #b45309;
+    --color-warning-soft: #fdf3e5;
+    --color-danger: #b91c1c;
+    --color-danger-soft: #fdecec;
+    --color-info: #0f766e;
+    --color-info-soft: #e6f2f0;
+    --color-primary-hover: #115e59;
+    --shadow-card: 0 1px 2px 0 rgb(16 42 42 / 0.04), 0 6px 16px -8px rgb(16 42 42 / 0.12);
+    --shadow-raised: 0 12px 32px -12px rgb(16 42 42 / 0.28);
+    --animate-hp-fade: hp-fade 0.2s ease-out;
+
+    @keyframes hp-fade {
+        from {
+            opacity: 0;
+            transform: translateY(-4px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+}
+
+:root {
+    --background: #f5f8f7;
+    --foreground: #172b2a;
+    --card: #ffffff;
+    --card-foreground: #172b2a;
+    --popover: #ffffff;
+    --popover-foreground: #172b2a;
+    --primary: #0f766e;
+    --primary-foreground: #ffffff;
+    --secondary: #e8f1ef;
+    --secondary-foreground: #102a2a;
+    --muted: #eef4f3;
+    --muted-foreground: #64748b;
+    --accent: #d7f5ef;
+    --accent-foreground: #0b4f4a;
+    --destructive: #b91c1c;
+    --border: #dce7e4;
+    --input: #dce7e4;
+    --ring: #0f766e;
+    --chart-1: #0f766e;
+    --chart-2: #2dd4bf;
+    --chart-3: #115e59;
+    --chart-4: #64748b;
+    --chart-5: #102a2a;
+    --radius: 0.75rem;
+    --sidebar: #102a2a;
+    --sidebar-foreground: #e6f2f0;
+    --sidebar-primary: #5eead4;
+    --sidebar-primary-foreground: #102a2a;
+    --sidebar-accent: #1b3f3d;
+    --sidebar-accent-foreground: #5eead4;
+    --sidebar-border: #1e4341;
+    --sidebar-ring: #5eead4;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+    }
+  body {
+    @apply bg-background text-foreground;
+    }
+  html {
+    @apply font-sans;
+    }
+}
