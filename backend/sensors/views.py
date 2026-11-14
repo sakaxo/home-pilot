@@ -3,21 +3,19 @@
 Only ``APIView`` is used here (no viewsets, no routers) so the small surface
 area of this backend stays easy to read.
 """
-from django.db import transaction
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import ValidationError
 from rest_framework.fields import DateTimeField
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import CommandStatus, Device, DeviceAction, DeviceCommand, SensorReading
+from .models import Device, SensorReading
 from .serializers import (
-    DeviceCommandResultSerializer,
-    DeviceCommandSerializer,
     DeviceDesiredStateSerializer,
-    DeviceReportedStateSerializer,
+    DeviceDesiredUpdateSerializer,
+    DeviceReportSerializer,
     DeviceSerializer,
     SensorReadingSerializer,
 )
@@ -65,11 +63,10 @@ def _serialize_timestamp(value):
 def _build_sensor_groups(limit):
     """Group the most recent readings by sensor type.
 
-    One small query per sensor type (four total) keeps each history series
-    independent: a partial reading that only contains, say, light_level does not
-    stop the temperature series from finding its own latest value. No fake
-    values are inserted -- an empty group has ``current: null`` and an empty
-    history.
+    One small query per sensor type keeps each history series independent: a
+    partial reading that only contains, say, light_level does not stop the
+    temperature series from finding its own latest value. No fake values are
+    inserted -- an empty group has ``current: null`` and an empty history.
     """
     groups = {}
 
@@ -139,210 +136,63 @@ class SensorReadingDetailView(APIView):
         return Response(serializer.data)
 
 
-class DeviceListView(APIView):
-    """GET all devices in the room."""
+class DeviceView(APIView):
+    """GET device states and PATCH desired light/fan states."""
 
     def get(self, request):
-        devices = Device.objects.all()
-        serializer = DeviceSerializer(devices, many=True)
-        return Response(serializer.data)
+        device = Device.get_solo()
+        return Response(DeviceSerializer(device).data)
 
-
-class DeviceDetailView(APIView):
-    """GET one device, or PATCH to change the desired state."""
-
-    def get(self, request, device_id):
-        device = get_object_or_404(Device, id=device_id)
-        serializer = DeviceSerializer(device)
-        return Response(serializer.data)
-
-    def patch(self, request, device_id):
-        device = get_object_or_404(Device, id=device_id)
-
-        serializer = DeviceDesiredStateSerializer(data=request.data)
-        serializer.is_valid(raise_exception=True)
-        new_state = serializer.validated_data["desired_state"]
-        action = DeviceAction.TURN_ON if new_state else DeviceAction.TURN_OFF
-
-        with transaction.atomic():
-            device.desired_state = new_state
-            # NOTE: reported_state is deliberately NOT changed here. Changing
-            # what we want is not the same as the device reporting success.
-            device.save(update_fields=["desired_state", "updated_at"])
-            DeviceCommand.objects.create(device=device, action=action)
-
-        serializer = DeviceSerializer(device)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-class DeviceStateReportView(APIView):
-    """POST the actual state reported by a physical device.
-
-    This is the only endpoint besides a confirmed command result that updates
-    ``reported_state``. A dashboard client can never call it on behalf of a
-    user click because it represents a device report.
-    """
-
-    def post(self, request, device_id):
-        device = get_object_or_404(Device, id=device_id)
-        serializer = DeviceReportedStateSerializer(data=request.data)
+    def patch(self, request):
+        serializer = DeviceDesiredUpdateSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        device.reported_state = serializer.validated_data["reported_state"]
-        device.last_reported_at = timezone.now()
-        device.save(update_fields=["reported_state", "last_reported_at", "updated_at"])
+        device = Device.get_solo()
+        updates = serializer.validated_data
+
+        if "light_state" in updates:
+            device.light_state = updates["light_state"]
+
+        if "fan_state" in updates:
+            device.fan_state = updates["fan_state"]
+
+        device.save(update_fields=[
+            "light_state",
+            "fan_state",
+            "updated_at",
+        ])
 
         return Response(DeviceSerializer(device).data)
 
 
-class DeviceCommandListView(APIView):
-    """GET the command log, POST a new command for a real device."""
+class DeviceDesiredView(APIView):
+    """GET desired light and fan states for the ESP32."""
 
     def get(self, request):
-        limit = _parse_limit(request)
-        queryset = DeviceCommand.objects.select_related("device")
+        device = Device.get_solo()
+        return Response(DeviceDesiredStateSerializer(device).data)
 
-        device_id = request.query_params.get("device")
-        if device_id:
-            queryset = queryset.filter(device__id=device_id)
-
-        command_status = request.query_params.get("status")
-        if command_status:
-            queryset = queryset.filter(status=command_status)
-
-        commands = queryset.order_by("-created_at")[:limit]
-        serializer = DeviceCommandSerializer(commands, many=True)
-        return Response(serializer.data)
+class DeviceReportView(APIView):
+    """POST actual light and fan states reported by the ESP32."""
 
     def post(self, request):
-        device_id = request.data.get("device")
-        action = request.data.get("action")
-
-        device = None
-        if device_id is not None:
-            try:
-                device = Device.objects.get(id=device_id)
-            except (Device.DoesNotExist, ValidationError, ValueError):
-                device = None
-        if device is None:
-            raise NotFound("Device not found.")
-
-        if action not in DeviceAction.values:
-            raise ValidationError({"action": "action must be 'turn_on' or 'turn_off'."})
-
-        command = DeviceCommand.objects.create(device=device, action=action)
-        serializer = DeviceCommandSerializer(command)
-        return Response(serializer.data, status=status.HTTP_201_CREATED)
-
-
-class DeviceCommandClaimView(APIView):
-    """Claim the oldest pending command for one device.
-
-    POST is used (not GET) because claiming changes server state. The
-    conditional UPDATE is the acknowledgement mechanism: only one request can
-    move a command out of ``pending``, so accidental duplicate polls cannot
-    execute the same command twice. Returns 204 when nothing is pending.
-    """
-
-    def post(self, request, device_id):
-        device = get_object_or_404(Device, id=device_id)
-
-        while True:
-            command = (
-                DeviceCommand.objects.filter(
-                    device=device,
-                    status=CommandStatus.PENDING,
-                )
-                .order_by("created_at", "id")
-                .first()
-            )
-            if command is None:
-                return Response(status=status.HTTP_204_NO_CONTENT)
-
-            claimed = DeviceCommand.objects.filter(
-                id=command.id,
-                status=CommandStatus.PENDING,
-            ).update(
-                status=CommandStatus.IN_PROGRESS,
-                updated_at=timezone.now(),
-            )
-            if claimed:
-                command.refresh_from_db()
-                return Response(DeviceCommandSerializer(command).data)
-
-
-class DeviceCommandResultView(APIView):
-    """POST the execution result for a command the device has claimed.
-
-    A confirmed result is the device's acknowledgement that it applied the
-    action, so it updates ``reported_state``. A failed result leaves the
-    reported state unchanged unless the device includes its actual state.
-    """
-
-    def post(self, request, command_id):
-        serializer = DeviceCommandResultSerializer(data=request.data)
+        serializer = DeviceReportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        result_status = serializer.validated_data["status"]
-        result_message = serializer.validated_data.get("result_message", "")
-        has_reported_state = "reported_state" in serializer.validated_data
-        reported_state = serializer.validated_data.get("reported_state")
+        device = Device.get_solo()
+        report = serializer.validated_data
 
-        with transaction.atomic():
-            command = DeviceCommand.objects.select_for_update().filter(id=command_id).first()
-            if command is None:
-                raise NotFound("Command not found.")
+        update_fields = ["last_reported_at", "updated_at"]
 
-            # Retrying the same result is harmless; a different result is not.
-            if command.status in (CommandStatus.CONFIRMED, CommandStatus.FAILED):
-                if command.status == result_status:
-                    return Response(DeviceCommandSerializer(command).data)
-                raise ValidationError(
-                    {"status": "This command has already completed with a different result."}
-                )
+        if "reported_light_state" in report:
+            device.reported_light_state = report["reported_light_state"]
+            update_fields.append("reported_light_state")
 
-            if command.status != CommandStatus.IN_PROGRESS:
-                raise ValidationError(
-                    {"status": "Claim the command before reporting a result."}
-                )
+        if "reported_fan_state" in report:
+            device.reported_fan_state = report["reported_fan_state"]
+            update_fields.append("reported_fan_state")
 
-            now = timezone.now()
-            updated = DeviceCommand.objects.filter(
-                id=command.id,
-                status=CommandStatus.IN_PROGRESS,
-            ).update(
-                status=result_status,
-                result_message=result_message,
-                completed_at=now,
-                updated_at=now,
-            )
-            if not updated:
-                raise ValidationError({"status": "This command is no longer in progress."})
+        device.last_reported_at = timezone.now()
+        device.save(update_fields=update_fields)
 
-            command.refresh_from_db()
-            device = command.device
-
-            if result_status == CommandStatus.CONFIRMED:
-                device.reported_state = (
-                    reported_state
-                    if has_reported_state
-                    else command.action == DeviceAction.TURN_ON
-                )
-                device.last_reported_at = now
-                device.save(update_fields=["reported_state", "last_reported_at", "updated_at"])
-            elif has_reported_state:
-                # A failed action can still tell us what state the device is in.
-                device.reported_state = reported_state
-                device.last_reported_at = now
-                device.save(update_fields=["reported_state", "last_reported_at", "updated_at"])
-
-        return Response(DeviceCommandSerializer(command).data)
-
-
-class DeviceCommandDetailView(APIView):
-    """GET a single command by its UUID."""
-
-    def get(self, request, command_id):
-        command = get_object_or_404(DeviceCommand, id=command_id)
-        serializer = DeviceCommandSerializer(command)
-        return Response(serializer.data)
+        return Response(DeviceSerializer(device).data)

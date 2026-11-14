@@ -1,51 +1,53 @@
 # HomePilot backend
 
-Django REST API for the HomePilot room. The same API serves the React
-dashboard and, later, the ESP32 firmware. The firmware itself is not part of
-this repository.
+Django REST API for the HomePilot room. The same API serves the React dashboard
+and the ESP32 firmware. The firmware lives in a separate PlatformIO project
+(not in this repository); see its own README for Wi-Fi/backend configuration.
 
 ## Device control API
 
-A device identifies itself with the UUID returned by `GET /api/devices/`.
+HomePilot controls one room device: a light and a fan. There is a single
+`Device` row, created automatically on first use, so no device id appears in
+the URL.
 
 Dashboard / user endpoints:
 
-- `GET /api/devices/` — registered devices with `desired_state` and the
-  device-reported `reported_state`.
-- `PATCH /api/devices/<device_id>/` with `{"desired_state": true|false}` —
-  stores the requested state and creates a `pending` command. It never changes
-  `reported_state`.
-- `GET /api/devices/commands/?limit=20` — command history. Optional `device`
-  and `status` filters are supported.
-- `GET /api/devices/commands/<command_id>/` — one command.
+- `GET /api/device/` — the current state:
+  - desired: `light_state`, `fan_state`
+  - reported: `reported_light_state`, `reported_fan_state`. `null` means the
+    hardware has not reported yet, which is **not** the same as off.
+  - `revision` (the current desired-state revision) and `reported_revision`
+    (the last revision the hardware acknowledged), plus `last_reported_at`.
+- `PATCH /api/device/` with `{"light_state": true|false}` and/or
+  `{"fan_state": true|false}` — stores the requested state(s). It never changes
+  a reported state. Changing a desired state increments `revision`; sending the
+  state it already has changes nothing and does not bump the revision.
 
-Firmware endpoints (ready for future integration):
+Firmware endpoints (used by the ESP32):
 
-- `POST /api/devices/<device_id>/commands/claim/` — atomically claims the
-  oldest `pending` command for that device and returns it with status
-  `in_progress`. Returns `204 No Content` when nothing is pending. Because the
-  claim is a conditional database update, duplicate polls cannot claim or
-  execute the same command twice.
-- `POST /api/devices/commands/<command_id>/result/` — reports the execution
-  result. Body:
-  `{"status": "confirmed"|"failed", "result_message": "...", "reported_state": true|false}`.
-  `reported_state` is optional. A confirmed result also updates the device's
-  reported state (to the command target, or to the supplied `reported_state`).
-  A failed result leaves the reported state unchanged unless the device sends
-  its actual state.
-- `POST /api/devices/<device_id>/state/` with `{"reported_state": true|false}`
-  — reports the device's actual state independently of a command.
+- `GET /api/device/desired/` —
+  `{"light_state": ..., "fan_state": ..., "revision": N}`. The firmware polls
+  this, applies any change, and remembers the revision it applied.
+- `POST /api/device/report/` — the hardware reports its actual states and the
+  revision it applied:
+  `{"reported_light_state": true|false, "reported_fan_state": true|false, "revision": N}`.
+  At least one reported state is required; `revision` is optional. This is the
+  only place reported states change.
 
-### Command lifecycle
+### Request and acknowledgement flow
 
-```
-pending -> in_progress -> confirmed | failed
-```
+1. The user clicks Light or Fan on the dashboard.
+2. The dashboard PATCHes the desired state to Django.
+3. Django stores the desired state and increments `revision`.
+4. The ESP32 polls `GET /api/device/desired/` and compares `revision` with the
+   last revision it applied.
+5. The ESP32 applies the change and reports the result through
+   `POST /api/device/report/`, including the revision it applied.
+6. The dashboard polls `GET /api/device/` and displays the reported state.
 
-Only a device claim moves a command to `in_progress`. Only a device execution
-report moves it to `confirmed` or `failed`. The dashboard cannot create an
-already-completed command. `reported_state` changes only from a device state
-report or a confirmed execution report, never from a user click.
+A successful dashboard request never means the hardware changed state. The
+dashboard shows a request as pending until the reported state matches the
+desired state, and shows "unknown" until the hardware reports at all.
 
 ## Security requirements before hardware deployment
 
@@ -54,11 +56,11 @@ dashboard can be used locally. Before exposing this API to real devices or a
 network, add:
 
 - Per-device authentication and authorization, such as a unique device token or
-  API key, so a device can only claim/report for its own UUID.
+  API key, so only the firmware can report states and only the dashboard can
+  change desired states.
 - Transport encryption (HTTPS) and authenticated dashboard access.
-- Rate limiting and request-size limits on device and sensor endpoints.
-- A command-expiry/reclaim policy for commands claimed but never completed,
-  plus an audit trail for state changes.
+- Rate limiting and request-size limits on the device and sensor endpoints.
+- An audit trail for state changes (the API deliberately keeps no command log).
 - Restricted CORS and secret rotation; do not publish the development
   `SECRET_KEY` or expose this configuration to the internet.
 
@@ -70,6 +72,6 @@ Run the backend tests from this directory:
 python manage.py test
 ```
 
-The device lifecycle tests exercise the API over HTTP. They simulate a device's
-claim and execution report; they do not prove that physical hardware executed a
-command.
+The device tests exercise the API over HTTP. They simulate a device reading the
+desired states and reporting its actual states; they do not prove that physical
+hardware executed a change.

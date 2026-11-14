@@ -1,11 +1,10 @@
 """Tests for the HomePilot API."""
 import uuid
 
-from django.core.management import call_command
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from .models import Device, DeviceCommand, DeviceType, SensorReading
+from .models import Device, SensorReading
 
 
 class SensorReadingTests(APITestCase):
@@ -144,372 +143,197 @@ class SensorReadingTests(APITestCase):
 
 
 class DeviceTests(APITestCase):
+    """The single room device, its desired/reported states and its revision."""
+
     def setUp(self):
-        call_command("init_devices")
-        self.light = Device.objects.get(device_type=DeviceType.LIGHT)
-        self.fan = Device.objects.get(device_type=DeviceType.FAN)
+        self.device = Device.get_solo()
 
-    def test_device_init_is_idempotent(self):
-        self.assertEqual(Device.objects.count(), 2)
-        call_command("init_devices")
-        self.assertEqual(Device.objects.count(), 2)
-
-    def test_list_devices(self):
-        response = self.client.get("/api/devices/")
+    def test_device_is_created_on_first_use(self):
+        self.assertEqual(Device.objects.count(), 1)
+        response = self.client.get("/api/device/")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(len(response.json()), 2)
+        self.assertEqual(Device.objects.count(), 1)
 
-    def test_get_shows_desired_and_reported_separately(self):
-        self.light.desired_state = True
-        self.light.reported_state = None
-        self.light.save()
+    def test_get_returns_desired_and_reported_separately(self):
+        self.device.light_state = True
+        self.device.reported_light_state = None
+        self.device.save()
 
-        body = self.client.get(f"/api/devices/{self.light.id}/").json()
-        self.assertEqual(body["desired_state"], True)
-        self.assertIsNone(body["reported_state"])
-        self.assertEqual(body["device_type"], "light")
+        body = self.client.get("/api/device/").json()
+        self.assertIs(body["light_state"], True)
+        self.assertIsNone(body["reported_light_state"])
+        self.assertIsNone(body["reported_fan_state"])
 
-    def test_patch_changes_desired_and_creates_pending_command(self):
+    def test_patch_updates_light_desired_state(self):
+        response = self.client.patch("/api/device/", {"light_state": True}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.device.refresh_from_db()
+        self.assertIs(self.device.light_state, True)
+        self.assertIs(self.device.fan_state, False)
+
+    def test_patch_updates_fan_desired_state(self):
+        response = self.client.patch("/api/device/", {"fan_state": True}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.device.refresh_from_db()
+        self.assertIs(self.device.fan_state, True)
+
+    def test_patch_can_update_both_states_at_once(self):
         response = self.client.patch(
-            f"/api/devices/{self.light.id}/", {"desired_state": True}, format="json"
+            "/api/device/", {"light_state": True, "fan_state": True}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-        self.light.refresh_from_db()
-        self.assertEqual(self.light.desired_state, True)
-
-        command = DeviceCommand.objects.get()
-        self.assertEqual(command.device, self.light)
-        self.assertEqual(command.action, "turn_on")
-        self.assertEqual(command.status, DeviceCommand._meta.get_field("status").default)
+        self.device.refresh_from_db()
+        self.assertIs(self.device.light_state, True)
+        self.assertIs(self.device.fan_state, True)
 
     def test_patch_does_not_change_reported_state(self):
-        self.light.reported_state = False
-        self.light.save()
+        self.device.reported_light_state = False
+        self.device.reported_fan_state = True
+        self.device.save()
 
-        self.client.patch(f"/api/devices/{self.light.id}/", {"desired_state": True}, format="json")
+        self.client.patch("/api/device/", {"light_state": True, "fan_state": False}, format="json")
 
-        self.light.refresh_from_db()
-        self.assertEqual(self.light.reported_state, False)
+        self.device.refresh_from_db()
+        self.assertIs(self.device.reported_light_state, False)
+        self.assertIs(self.device.reported_fan_state, True)
 
-    def test_patch_missing_device_is_404(self):
+    def test_patch_increments_revision_on_change(self):
+        self.assertEqual(self.device.revision, 0)
+
+        self.client.patch("/api/device/", {"light_state": True}, format="json")
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.revision, 1)
+
+        self.client.patch("/api/device/", {"fan_state": True}, format="json")
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.revision, 2)
+
+    def test_patch_same_value_does_not_change_revision(self):
+        self.client.patch("/api/device/", {"light_state": True}, format="json")
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.revision, 1)
+
+        # Sending the state it already has is a no-op.
+        response = self.client.patch("/api/device/", {"light_state": True}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.revision, 1)
+
+    def test_patch_requires_a_state_field(self):
+        response = self.client.patch("/api/device/", {}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_rejects_non_boolean(self):
+        response = self.client.patch("/api/device/", {"light_state": "maybe"}, format="json")
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_patch_ignores_reported_fields(self):
         response = self.client.patch(
-            f"/api/devices/{uuid.uuid4()}/", {"desired_state": True}, format="json"
+            "/api/device/",
+            {"light_state": True, "reported_light_state": True},
+            format="json",
         )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.device.refresh_from_db()
+        self.assertIs(self.device.light_state, True)
+        self.assertIsNone(self.device.reported_light_state)
 
-    def test_get_missing_device_is_404(self):
-        response = self.client.get(f"/api/devices/{uuid.uuid4()}/")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+    def test_desired_endpoint_returns_states_and_revision(self):
+        self.device.light_state = True
+        self.device.revision = 3
+        self.device.save()
 
+        body = self.client.get("/api/device/desired/").json()
+        self.assertEqual(set(body), {"light_state", "fan_state", "revision"})
+        self.assertIs(body["light_state"], True)
+        self.assertIs(body["fan_state"], False)
+        self.assertEqual(body["revision"], 3)
 
-class DeviceCommandTests(APITestCase):
-    def setUp(self):
-        call_command("init_devices")
-        self.light = Device.objects.get(device_type=DeviceType.LIGHT)
+    def test_report_updates_reported_states_and_revision(self):
+        response = self.client.post(
+            "/api/device/report/",
+            {"reported_light_state": True, "reported_fan_state": False, "revision": 2},
+            format="json",
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-    def test_create_command_for_valid_device(self):
-        payload = {"device": str(self.light.id), "action": "turn_on"}
-        response = self.client.post("/api/devices/commands/", payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.device.refresh_from_db()
+        self.assertIs(self.device.reported_light_state, True)
+        self.assertIs(self.device.reported_fan_state, False)
+        self.assertEqual(self.device.reported_revision, 2)
+        self.assertIsNotNone(self.device.last_reported_at)
 
-        body = response.json()
-        self.assertEqual(body["status"], "pending")
-        self.assertEqual(body["action"], "turn_on")
-        self.assertIn("Living Room Light", body["device"])
-        self.assertEqual(body["device_id"], str(self.light.id))
+    def test_report_can_update_one_state(self):
+        self.device.reported_fan_state = True
+        self.device.save()
 
-    def test_cannot_create_command_as_confirmed(self):
-        payload = {"device": str(self.light.id), "action": "turn_on", "status": "confirmed"}
-        response = self.client.post("/api/devices/commands/", payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.json()["status"], "pending")
+        response = self.client.post(
+            "/api/device/report/", {"reported_light_state": True}, format="json"
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
 
-    def test_invalid_action_rejected(self):
-        payload = {"device": str(self.light.id), "action": "jump"}
-        response = self.client.post("/api/devices/commands/", payload, format="json")
+        self.device.refresh_from_db()
+        self.assertIs(self.device.reported_light_state, True)
+        self.assertIs(self.device.reported_fan_state, True)
+
+    def test_report_does_not_change_desired_state(self):
+        self.device.light_state = False
+        self.device.save()
+
+        self.client.post("/api/device/report/", {"reported_light_state": True}, format="json")
+
+        self.device.refresh_from_db()
+        self.assertIs(self.device.light_state, False)
+
+    def test_report_requires_a_state(self):
+        response = self.client.post("/api/device/report/", {"revision": 1}, format="json")
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-    def test_invalid_device_is_404(self):
-        payload = {"device": str(uuid.uuid4()), "action": "turn_on"}
-        response = self.client.post("/api/devices/commands/", payload, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_missing_device_is_404(self):
-        response = self.client.post("/api/devices/commands/", {"action": "turn_on"}, format="json")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_list_and_filter_commands(self):
-        self.client.post("/api/devices/commands/", {"device": str(self.light.id), "action": "turn_on"}, format="json")
-        self.assertEqual(len(self.client.get("/api/devices/commands/").json()), 1)
-
-        self.assertEqual(len(self.client.get("/api/devices/commands/?status=pending").json()), 1)
-        self.assertEqual(len(self.client.get("/api/devices/commands/?status=failed").json()), 0)
-        self.assertEqual(
-            len(self.client.get(f"/api/devices/commands/?device={self.light.id}").json()), 1
-        )
-
-    def test_empty_command_list(self):
-        response = self.client.get("/api/devices/commands/")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json(), [])
-
-    def test_retrieve_command_by_id(self):
-        created = self.client.post(
-            "/api/devices/commands/", {"device": str(self.light.id), "action": "turn_off"}, format="json"
-        ).json()
-
-        response = self.client.get(f"/api/devices/commands/{created['id']}/")
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()["id"], created["id"])
-
-        missing = self.client.get(f"/api/devices/commands/{uuid.uuid4()}/")
-        self.assertEqual(missing.status_code, status.HTTP_404_NOT_FOUND)
-
-
-class DeviceCommandWorkflowTests(APITestCase):
-    """The pending -> in_progress -> confirmed/failed device workflow."""
-
-    def setUp(self):
-        call_command("init_devices")
-        self.light = Device.objects.get(device_type=DeviceType.LIGHT)
-        self.fan = Device.objects.get(device_type=DeviceType.FAN)
-
-    def create_pending(self, action="turn_on", device=None):
-        device = device or self.light
+    def test_report_rejects_invalid_values(self):
         response = self.client.post(
-            "/api/devices/commands/",
-            {"device": str(device.id), "action": action},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        return response.json()
-
-    def claim(self, device=None):
-        device = device or self.light
-        return self.client.post(f"/api/devices/{device.id}/commands/claim/")
-
-    def test_claim_marks_oldest_pending_command_in_progress(self):
-        first = self.create_pending("turn_on")
-        second = self.create_pending("turn_off")
-
-        response = self.claim()
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()["id"], first["id"])
-        self.assertEqual(response.json()["status"], "in_progress")
-
-        # A second poll cannot claim the same command again.
-        response = self.claim()
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()["id"], second["id"])
-        self.assertEqual(response.json()["status"], "in_progress")
-
-        # Nothing is left pending.
-        self.assertEqual(self.claim().status_code, status.HTTP_204_NO_CONTENT)
-
-    def test_claim_missing_device_is_404(self):
-        response = self.client.post(f"/api/devices/{uuid.uuid4()}/commands/claim/")
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_result_for_missing_command_is_404(self):
-        response = self.client.post(
-            f"/api/devices/commands/{uuid.uuid4()}/result/",
-            {"status": "confirmed"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_invalid_result_status_is_rejected(self):
-        command = self.create_pending("turn_on")
-        self.claim()
-
-        response = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "executed"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-        command_row = DeviceCommand.objects.get(id=command["id"])
-        self.assertEqual(command_row.status, "in_progress")
-
-    def test_confirmed_result_updates_reported_state_and_completes_command(self):
-        command = self.create_pending("turn_on")
-        self.claim()
-
-        response = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "confirmed", "result_message": "Relay switched."},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        body = response.json()
-        self.assertEqual(body["status"], "confirmed")
-        self.assertEqual(body["result_message"], "Relay switched.")
-        self.assertIsNotNone(body["completed_at"])
-
-        self.light.refresh_from_db()
-        self.assertIs(self.light.reported_state, True)
-        self.assertIsNotNone(self.light.last_reported_at)
-        # A device result does not silently change the requested state.
-        self.assertIs(self.light.desired_state, False)
-
-    def test_confirmed_result_can_use_explicit_reported_state(self):
-        command = self.create_pending("turn_on")
-        self.claim()
-
-        response = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "confirmed", "reported_state": False},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-        self.light.refresh_from_db()
-        self.assertIs(self.light.reported_state, False)
-
-    def test_failed_result_does_not_change_reported_state(self):
-        self.light.reported_state = False
-        self.light.save(update_fields=["reported_state"])
-        command = self.create_pending("turn_on")
-        self.claim()
-
-        response = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "failed", "result_message": "Relay did not respond."},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertEqual(response.json()["status"], "failed")
-
-        self.light.refresh_from_db()
-        self.assertIs(self.light.reported_state, False)
-
-    def test_failed_result_can_report_actual_state(self):
-        command = self.create_pending("turn_on")
-        self.claim()
-
-        response = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "failed", "reported_state": False},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-
-        self.light.refresh_from_db()
-        self.assertIs(self.light.reported_state, False)
-
-    def test_result_before_claim_is_rejected(self):
-        command = self.create_pending("turn_on")
-
-        response = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "confirmed"},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
-
-        command_row = DeviceCommand.objects.get(id=command["id"])
-        self.assertEqual(command_row.status, "pending")
-
-    def test_duplicate_result_is_idempotent_but_conflicting_result_is_rejected(self):
-        command = self.create_pending("turn_on")
-        self.claim()
-
-        payload = {"status": "confirmed"}
-        first = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/", payload, format="json"
-        )
-        self.assertEqual(first.status_code, status.HTTP_200_OK)
-
-        duplicate = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/", payload, format="json"
-        )
-        self.assertEqual(duplicate.status_code, status.HTTP_200_OK)
-        self.assertEqual(duplicate.json()["status"], "confirmed")
-
-        conflicting = self.client.post(
-            f"/api/devices/commands/{command['id']}/result/",
-            {"status": "failed"},
-            format="json",
-        )
-        self.assertEqual(conflicting.status_code, status.HTTP_400_BAD_REQUEST)
-
-    def test_device_state_report_updates_reported_state_only(self):
-        self.light.desired_state = True
-        self.light.save(update_fields=["desired_state"])
-
-        response = self.client.post(
-            f"/api/devices/{self.light.id}/state/",
-            {"reported_state": False},
-            format="json",
-        )
-        self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIs(response.json()["reported_state"], False)
-
-        self.light.refresh_from_db()
-        self.assertIs(self.light.reported_state, False)
-        self.assertIs(self.light.desired_state, True)
-        self.assertIsNotNone(self.light.last_reported_at)
-
-    def test_device_state_report_rejects_missing_or_invalid_state(self):
-        response = self.client.post(
-            f"/api/devices/{self.light.id}/state/", {}, format="json"
+            "/api/device/report/", {"reported_light_state": "maybe"}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
         response = self.client.post(
-            f"/api/devices/{self.light.id}/state/", {"reported_state": "maybe"}, format="json"
+            "/api/device/report/", {"reported_light_state": True, "revision": -1}, format="json"
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
-        response = self.client.post(
-            f"/api/devices/{uuid.uuid4()}/state/", {"reported_state": True}, format="json"
-        )
-        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
-
-    def test_full_user_command_and_device_acknowledgement_flow(self):
+    def test_full_request_and_acknowledgement_flow(self):
         # 1. The dashboard asks for the light to turn on.
-        response = self.client.patch(
-            f"/api/devices/{self.light.id}/", {"desired_state": True}, format="json"
-        )
+        response = self.client.patch("/api/device/", {"light_state": True}, format="json")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIs(response.json()["desired_state"], True)
-        self.assertIsNone(response.json()["reported_state"])
+        self.assertIs(response.json()["light_state"], True)
+        self.assertIsNone(response.json()["reported_light_state"])
+        revision = response.json()["revision"]
+        self.assertEqual(revision, 1)
 
-        command = DeviceCommand.objects.get(device=self.light)
-        self.assertEqual(command.status, "pending")
+        # 2. The hardware reads the desired states and the current revision.
+        desired = self.client.get("/api/device/desired/").json()
+        self.assertIs(desired["light_state"], True)
+        self.assertEqual(desired["revision"], revision)
 
-        # 2. The device claims the command exactly once.
-        claimed = self.claim().json()
-        self.assertEqual(claimed["id"], str(command.id))
-        self.assertEqual(claimed["status"], "in_progress")
-
-        # 3. The device reports the result.
+        # 3. The hardware applies the change and reports back.
         self.client.post(
-            f"/api/devices/commands/{command.id}/result/",
-            {"status": "confirmed"},
+            "/api/device/report/",
+            {"reported_light_state": True, "reported_fan_state": False, "revision": revision},
             format="json",
         )
 
-        # 4. The dashboard sees the desired and reported state separately.
-        body = self.client.get(f"/api/devices/{self.light.id}/").json()
-        self.assertIs(body["desired_state"], True)
-        self.assertIs(body["reported_state"], True)
-        self.assertIsNotNone(body["last_reported_at"])
-
-        self.assertEqual(
-            self.client.get(f"/api/devices/commands/{command.id}/").json()["status"],
-            "confirmed",
-        )
+        # 4. The dashboard sees the desired and reported states agree.
+        body = self.client.get("/api/device/").json()
+        self.assertIs(body["light_state"], True)
+        self.assertIs(body["reported_light_state"], True)
+        self.assertEqual(body["reported_revision"], revision)
 
 
 class CorsTests(APITestCase):
     def test_allows_local_frontend_origin(self):
-        response = self.client.get("/api/devices/", HTTP_ORIGIN="http://localhost:3000")
+        response = self.client.get("/api/device/", HTTP_ORIGIN="http://localhost:3000")
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response["Access-Control-Allow-Origin"], "http://localhost:3000")
 
     def test_blocks_other_origin(self):
-        response = self.client.get("/api/devices/", HTTP_ORIGIN="http://evil.example")
+        response = self.client.get("/api/device/", HTTP_ORIGIN="http://evil.example")
         self.assertNotIn("Access-Control-Allow-Origin", response)

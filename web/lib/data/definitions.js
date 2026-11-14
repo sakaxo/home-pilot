@@ -41,43 +41,28 @@ export const SENSOR_DEFINITIONS = [
   },
 ]
 
-// Device types supported by the backend. The device name itself always comes
-// from the API; these definitions only supply an icon and a type label.
-export const DEVICE_DEFINITIONS = [
+// The two controllable outputs on the single room device. Each `stateKey`
+// matches a desired-state field and each `reportedKey` a reported-state field
+// returned by GET /api/device/.
+export const DEVICE_CONTROLS = [
   {
     id: "light",
-    device_type: "light",
     name: "Light",
     icon: "lightbulb",
+    stateKey: "light_state",
+    reportedKey: "reported_light_state",
   },
   {
     id: "fan",
-    device_type: "fan",
     name: "Fan",
     icon: "fan",
+    stateKey: "fan_state",
+    reportedKey: "reported_fan_state",
   },
 ]
 
-export const DEVICE_TYPE_MAP = Object.fromEntries(
-  DEVICE_DEFINITIONS.map((definition) => [definition.device_type, definition])
-)
-
-// DeviceCommand actions, exactly as the backend names them.
-export const COMMAND_ACTIONS = {
-  turn_on: { id: "turn_on", label: "Turn on", target: true },
-  turn_off: { id: "turn_off", label: "Turn off", target: false },
-}
-
-// DeviceCommand statuses, exactly as the backend names them. `pending` means
-// the device has not claimed the command yet; `in_progress` means it has
-// claimed it and is applying it. `confirmed` is only set by a device report.
-export const COMMAND_STATUSES = {
-  pending: { id: "pending", label: "Pending", tone: "warning" },
-  in_progress: { id: "in_progress", label: "Executing", tone: "info" },
-  confirmed: { id: "confirmed", label: "Confirmed", tone: "success" },
-  failed: { id: "failed", label: "Failed", tone: "danger" },
-}
-
+// A reported state can be true, false, or null (the hardware has not reported
+// yet, which is not the same as off).
 export const DEVICE_STATE_LABELS = {
   true: "On",
   false: "Off",

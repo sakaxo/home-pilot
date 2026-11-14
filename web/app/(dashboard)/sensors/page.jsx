@@ -18,7 +18,7 @@ const PAGE_DESCRIPTION =
   "Temperature, humidity and ambient light from the HomePilot controller."
 
 // Polling interval for sensor refresh loop
-const SENSOR_POLL_INTERVAL_MS = 5000
+const SENSOR_POLL_INTERVAL_MS = 2000
 
 const STATUS_TONES = {
   live: "success",

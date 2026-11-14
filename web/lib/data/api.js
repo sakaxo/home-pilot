@@ -11,7 +11,6 @@ export const API_BASE_URL = (
 ).replace(/\/+$/, "");
 
 const SENSOR_HISTORY_LIMIT = 30;
-const COMMAND_HISTORY_LIMIT = 20;
 
 async function apiRequest(path, options = {}) {
   const headers = {
@@ -47,17 +46,18 @@ export function fetchSensorReadings(limit = SENSOR_HISTORY_LIMIT) {
   return apiRequest(`/api/sensors/readings/?limit=${encodeURIComponent(limit)}`);
 }
 
-export function fetchDevices() {
-  return apiRequest("/api/devices/");
+// The single room device. Its response carries the desired states
+// (light_state / fan_state) and the hardware-reported states
+// (reported_light_state / reported_fan_state), which may be null (unknown).
+export function fetchDevice() {
+  return apiRequest("/api/device/");
 }
 
-export function fetchCommands(limit = COMMAND_HISTORY_LIMIT) {
-  return apiRequest(`/api/devices/commands/?limit=${encodeURIComponent(limit)}`);
-}
-
-export function updateDeviceDesiredState(deviceId, desiredState) {
-  return apiRequest(`/api/devices/${deviceId}/`, {
+// Change the desired state of the light and/or the fan. `updates` is a partial
+// object such as { light_state: true } or { fan_state: false }.
+export function updateDeviceState(updates) {
+  return apiRequest("/api/device/", {
     method: "PATCH",
-    body: JSON.stringify({ desired_state: desiredState }),
+    body: JSON.stringify(updates),
   });
 }

@@ -1,11 +1,11 @@
 """Serializers for the HomePilot API.
 
-Every serializer keeps server-managed fields (IDs, timestamps, device-reported
-state, command status) read-only so a client can never forge them.
+Every serializer keeps server-managed fields (IDs, timestamps, hardware-reported
+state and revision) read-only so a dashboard client can never forge them.
 """
 from rest_framework import serializers
 
-from .models import CommandStatus, Device, DeviceCommand, SensorReading
+from .models import Device, SensorReading
 
 
 class SensorReadingSerializer(serializers.ModelSerializer):
@@ -24,100 +24,52 @@ class SensorReadingSerializer(serializers.ModelSerializer):
 
 
 class DeviceSerializer(serializers.ModelSerializer):
-    """Read view of a device.
-
-    ``desired_state`` and ``reported_state`` are returned as separate fields so
-    the client can always tell "what we asked for" from "what the device says".
-    ``reported_state`` is read-only: clients can never fake a device report.
-    """
-
     class Meta:
         model = Device
         fields = [
             "id",
-            "name",
-            "device_type",
-            "desired_state",
-            "reported_state",
+            "light_state",
+            "fan_state",
+            "reported_light_state",
+            "reported_fan_state",
             "last_reported_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = [
-            "id",
-            "reported_state",
-            "last_reported_at",
-            "created_at",
-            "updated_at",
-        ]
+        read_only_fields = fields
+
+class DeviceDesiredUpdateSerializer(serializers.Serializer):
+    """Accepts a desired-state change for the light and/or the fan.
+
+    Only the fields that are sent are changed. ``reported_*`` is never accepted
+    here: a request from the app is not a hardware report.
+    """
+
+    light_state = serializers.BooleanField(required=False)
+    fan_state = serializers.BooleanField(required=False)
+
+    def validate(self, attrs):
+        if "light_state" not in attrs and "fan_state" not in attrs:
+            raise serializers.ValidationError(
+                "Provide light_state and/or fan_state."
+            )
+        return attrs
 
 
 class DeviceDesiredStateSerializer(serializers.Serializer):
-    """Accepts only a change to the desired state for a PATCH."""
+    light_state = serializers.BooleanField()
+    fan_state = serializers.BooleanField()
 
-    desired_state = serializers.BooleanField(required=True)
+class DeviceReportSerializer(serializers.Serializer):
+    reported_light_state = serializers.BooleanField(required=False)
+    reported_fan_state = serializers.BooleanField(required=False)
 
-
-class DeviceReportedStateSerializer(serializers.Serializer):
-    """Accepts an actual state report from a physical device."""
-
-    reported_state = serializers.BooleanField(required=True)
-
-
-class DeviceCommandResultSerializer(serializers.Serializer):
-    """Accepts the execution result reported by a physical device.
-
-    ``reported_state`` is optional because a device may report its state
-    separately through the device state endpoint.
-    """
-
-    status = serializers.ChoiceField(
-        choices=[CommandStatus.CONFIRMED, CommandStatus.FAILED],
-        required=True,
-    )
-    result_message = serializers.CharField(
-        required=False,
-        allow_blank=True,
-        default="",
-        max_length=2000,
-    )
-    reported_state = serializers.BooleanField(required=False)
-
-
-class DeviceCommandSerializer(serializers.ModelSerializer):
-    """A turn on/off command.
-
-    ``status`` is read-only so a client cannot create a command that is already
-    confirmed or failed -- every new command starts as ``pending``.
-
-    ``device`` keeps returning the human-readable device name for backwards
-    compatibility, while ``device_id`` gives clients the stable UUID they need
-    to attach the command to the matching device.
-    """
-
-    device = serializers.StringRelatedField(read_only=True)
-    device_id = serializers.UUIDField(source="device.id", read_only=True)
-
-    class Meta:
-        model = DeviceCommand
-        fields = [
-            "id",
-            "device",
-            "device_id",
-            "action",
-            "status",
-            "result_message",
-            "created_at",
-            "updated_at",
-            "completed_at",
-        ]
-        read_only_fields = [
-            "id",
-            "device",
-            "device_id",
-            "status",
-            "result_message",
-            "created_at",
-            "updated_at",
-            "completed_at",
-        ]
+    def validate(self, attrs):
+        if (
+            "reported_light_state" not in attrs
+            and "reported_fan_state" not in attrs
+        ):
+            raise serializers.ValidationError(
+                "Provide reported_light_state and/or reported_fan_state."
+            )
+        return attrs
